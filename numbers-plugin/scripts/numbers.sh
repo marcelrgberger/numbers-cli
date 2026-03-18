@@ -7,6 +7,11 @@ set -euo pipefail
 
 APP="Numbers"
 
+# Unicode delimiters — extremely unlikely to appear in spreadsheet data
+DELIM="⌘"
+DELIM3="⌘⌘⌘"
+NULL_SENTINEL="⌘NULL⌘"
+
 run_applescript() {
   osascript -e "$1" 2>/dev/null
 }
@@ -76,11 +81,12 @@ cmd_quit() {
 }
 
 cmd_list_documents() {
-  run_applescript "
-    tell application \"$APP\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  run_applescript_safe "
+    tell application \"$esc_app\"
       set output to \"\"
       repeat with d in documents
-        set output to output & name of d & \"|\" & (id of d) & linefeed
+        set output to output & name of d & \"$DELIM\" & (id of d) & linefeed
       end repeat
       return output
     end tell
@@ -89,8 +95,8 @@ import json, sys
 docs = []
 for line in sys.stdin:
     line = line.strip()
-    if '|' in line:
-        name, did = line.rsplit('|', 1)
+    if '$DELIM' in line:
+        name, did = line.rsplit('$DELIM', 1)
         docs.append({'name': name, 'id': did})
 print(json.dumps({'documents': docs}))
 "
@@ -98,30 +104,32 @@ print(json.dumps({'documents': docs}))
 
 cmd_new_document() {
   local template="${1:-}"
+  local esc_app; esc_app=$(as_escape "$APP")
   if [ -n "$template" ]; then
-    run_applescript "
-      tell application \"$APP\"
+    local esc_template; esc_template=$(as_escape "$template")
+    run_applescript_safe "
+      tell application \"$esc_app\"
         activate
-        set newDoc to make new document with properties {document template: template \"$template\"}
-        return name of newDoc & \"|\" & id of newDoc
+        set newDoc to make new document with properties {document template: template \"$esc_template\"}
+        return name of newDoc & \"$DELIM\" & id of newDoc
       end tell
     " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-name, did = line.rsplit('|', 1)
+name, did = line.rsplit('$DELIM', 1)
 print(json.dumps({'name': name, 'id': did}))
 "
   else
-    run_applescript "
-      tell application \"$APP\"
+    run_applescript_safe "
+      tell application \"$esc_app\"
         activate
         set newDoc to make new document
-        return name of newDoc & \"|\" & id of newDoc
+        return name of newDoc & \"$DELIM\" & id of newDoc
       end tell
     " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-name, did = line.rsplit('|', 1)
+name, did = line.rsplit('$DELIM', 1)
 print(json.dumps({'name': name, 'id': did}))
 "
   fi
@@ -129,18 +137,27 @@ print(json.dumps({'name': name, 'id': did}))
 
 cmd_open_document() {
   local filepath="$1"
-  run_applescript "
-    tell application \"$APP\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_filepath; esc_filepath=$(as_escape "$filepath")
+  run_applescript_safe "
+    tell application \"$esc_app\"
       activate
-      open POSIX file \"$filepath\"
-      delay 1
+      set docCountBefore to count of documents
+      open POSIX file \"$esc_filepath\"
+      -- Wait until document count changes or timeout after 10 seconds
+      set maxWait to 50
+      set waited to 0
+      repeat while (count of documents) = docCountBefore and waited < maxWait
+        delay 0.2
+        set waited to waited + 1
+      end repeat
       set d to front document
-      return name of d & \"|\" & id of d
+      return name of d & \"$DELIM\" & id of d
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-name, did = line.rsplit('|', 1)
+name, did = line.rsplit('$DELIM', 1)
 print(json.dumps({'name': name, 'id': did}))
 "
 }
@@ -148,9 +165,11 @@ print(json.dumps({'name': name, 'id': did}))
 cmd_close_document() {
   local doc_name="$1"
   local saving="${2:-yes}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
   run_applescript "
-    tell application \"$APP\"
-      close document \"$doc_name\" saving $saving
+    tell application \"$esc_app\"
+      close document \"$esc_doc\" saving $saving
     end tell
   " >/dev/null
   echo "{\"status\": \"closed\", \"document\": $(echo "$doc_name" | json_escape)}"
@@ -159,16 +178,19 @@ cmd_close_document() {
 cmd_save_document() {
   local doc_name="$1"
   local save_path="${2:-}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
   if [ -n "$save_path" ]; then
+    local esc_path; esc_path=$(as_escape "$save_path")
     run_applescript "
-      tell application \"$APP\"
-        save document \"$doc_name\" in POSIX file \"$save_path\"
+      tell application \"$esc_app\"
+        save document \"$esc_doc\" in POSIX file \"$esc_path\"
       end tell
     " >/dev/null
   else
     run_applescript "
-      tell application \"$APP\"
-        save document \"$doc_name\"
+      tell application \"$esc_app\"
+        save document \"$esc_doc\"
       end tell
     " >/dev/null
   fi
@@ -179,6 +201,9 @@ cmd_export_document() {
   local doc_name="$1"
   local format="$2"
   local dest_path="$3"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_dest; esc_dest=$(as_escape "$dest_path")
   local as_format
   case "$format" in
     pdf|PDF) as_format="PDF" ;;
@@ -188,16 +213,17 @@ cmd_export_document() {
     *) echo "{\"error\": \"Unknown format: $format. Use: pdf, excel, csv, numbers09\"}"; return 1 ;;
   esac
   run_applescript "
-    tell application \"$APP\"
-      export document \"$doc_name\" to POSIX file \"$dest_path\" as $as_format
+    tell application \"$esc_app\"
+      export document \"$esc_doc\" to POSIX file \"$esc_dest\" as $as_format
     end tell
   " >/dev/null
   echo "{\"status\": \"exported\", \"document\": $(echo "$doc_name" | json_escape), \"format\": \"$format\", \"path\": $(echo "$dest_path" | json_escape)}"
 }
 
 cmd_list_templates() {
-  run_applescript "
-    tell application \"$APP\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  run_applescript_safe "
+    tell application \"$esc_app\"
       set tNames to {}
       repeat with t in templates
         set end of tNames to name of t
@@ -216,9 +242,11 @@ print(json.dumps({'templates': templates}))
 
 cmd_list_sheets() {
   local doc_name="$1"
-  run_applescript "
-    tell application \"$APP\"
-      tell document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell document \"$esc_doc\"
         set output to \"\"
         repeat with s in sheets
           set output to output & name of s & linefeed
@@ -236,12 +264,15 @@ print(json.dumps({'sheets': sheets}))
 cmd_new_sheet() {
   local doc_name="$1"
   local sheet_name="${2:-}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
   if [ -n "$sheet_name" ]; then
-    run_applescript "
-      tell application \"$APP\"
-        tell document \"$doc_name\"
+    local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+    run_applescript_safe "
+      tell application \"$esc_app\"
+        tell document \"$esc_doc\"
           set newSheet to make new sheet
-          set name of newSheet to \"$sheet_name\"
+          set name of newSheet to \"$esc_sheet\"
           return name of newSheet
         end tell
       end tell
@@ -250,9 +281,9 @@ import json, sys
 print(json.dumps({'name': sys.stdin.read().strip()}))
 "
   else
-    run_applescript "
-      tell application \"$APP\"
-        tell document \"$doc_name\"
+    run_applescript_safe "
+      tell application \"$esc_app\"
+        tell document \"$esc_doc\"
           set newSheet to make new sheet
           return name of newSheet
         end tell
@@ -267,10 +298,13 @@ print(json.dumps({'name': sys.stdin.read().strip()}))
 cmd_delete_sheet() {
   local doc_name="$1"
   local sheet_name="$2"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
   run_applescript "
-    tell application \"$APP\"
-      tell document \"$doc_name\"
-        delete sheet \"$sheet_name\"
+    tell application \"$esc_app\"
+      tell document \"$esc_doc\"
+        delete sheet \"$esc_sheet\"
       end tell
     end tell
   " >/dev/null
@@ -280,10 +314,13 @@ cmd_delete_sheet() {
 cmd_set_active_sheet() {
   local doc_name="$1"
   local sheet_name="$2"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
   run_applescript "
-    tell application \"$APP\"
-      tell document \"$doc_name\"
-        set active sheet to sheet \"$sheet_name\"
+    tell application \"$esc_app\"
+      tell document \"$esc_doc\"
+        set active sheet to sheet \"$esc_sheet\"
       end tell
     end tell
   " >/dev/null
@@ -295,12 +332,15 @@ cmd_set_active_sheet() {
 cmd_list_tables() {
   local doc_name="$1"
   local sheet_name="$2"
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
         set output to \"\"
         repeat with t in tables
-          set output to output & name of t & \"|\" & row count of t & \"|\" & column count of t & linefeed
+          set output to output & name of t & \"$DELIM\" & row count of t & \"$DELIM\" & column count of t & linefeed
         end repeat
         return output
       end tell
@@ -310,8 +350,8 @@ import json, sys
 tables = []
 for line in sys.stdin:
     line = line.strip()
-    if '|' in line:
-        parts = line.split('|')
+    if '$DELIM' in line:
+        parts = line.split('$DELIM')
         tables.append({'name': parts[0], 'rows': int(parts[1]), 'columns': int(parts[2])})
 print(json.dumps({'tables': tables}))
 "
@@ -323,18 +363,26 @@ cmd_new_table() {
   local table_name="${3:-}"
   local rows="${4:-5}"
   local cols="${5:-5}"
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local name_cmd=""
+  if [ -n "$table_name" ]; then
+    local esc_table; esc_table=$(as_escape "$table_name")
+    name_cmd="set name of newTable to \"$esc_table\""
+  fi
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
         set newTable to make new table with properties {row count: $rows, column count: $cols}
-        $([ -n "$table_name" ] && echo "set name of newTable to \"$table_name\"")
-        return name of newTable & \"|\" & row count of newTable & \"|\" & column count of newTable
+        $name_cmd
+        return name of newTable & \"$DELIM\" & row count of newTable & \"$DELIM\" & column count of newTable
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-parts = line.split('|')
+parts = line.split('$DELIM')
 print(json.dumps({'name': parts[0], 'rows': int(parts[1]), 'columns': int(parts[2])}))
 "
 }
@@ -343,10 +391,14 @@ cmd_delete_table() {
   local doc_name="$1"
   local sheet_name="$2"
   local table_name="$3"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        delete table \"$table_name\"
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        delete table \"$esc_table\"
       end tell
     end tell
   " >/dev/null
@@ -357,9 +409,13 @@ cmd_table_info() {
   local doc_name="$1"
   local sheet_name="$2"
   local table_name="$3"
-  run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set rc to row count
         set cc to column count
         set hrc to header row count
@@ -367,13 +423,13 @@ cmd_table_info() {
         set frc to footer row count
         set flt to filtered
         set n to name
-        return n & \"|\" & rc & \"|\" & cc & \"|\" & hrc & \"|\" & hcc & \"|\" & frc & \"|\" & flt
+        return n & \"$DELIM\" & rc & \"$DELIM\" & cc & \"$DELIM\" & hrc & \"$DELIM\" & hcc & \"$DELIM\" & frc & \"$DELIM\" & flt
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-p = line.split('|')
+p = line.split('$DELIM')
 print(json.dumps({
     'name': p[0], 'row_count': int(p[1]), 'column_count': int(p[2]),
     'header_rows': int(p[3]), 'header_columns': int(p[4]),
@@ -388,10 +444,20 @@ cmd_sort_table() {
   local table_name="$3"
   local column_name="$4"
   local direction="${5:-ascending}"
+  # Map short forms to AppleScript-compatible values
+  case "$direction" in
+    asc|ascending) direction="ascending" ;;
+    desc|descending) direction="descending" ;;
+  esac
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_col; esc_col=$(as_escape "$column_name")
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        sort table \"$table_name\" by column \"$column_name\" direction $direction
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        sort table \"$esc_table\" by column \"$esc_col\" direction $direction
       end tell
     end tell
   " >/dev/null
@@ -402,10 +468,14 @@ cmd_transpose_table() {
   local doc_name="$1"
   local sheet_name="$2"
   local table_name="$3"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        transpose table \"$table_name\"
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        transpose table \"$esc_table\"
       end tell
     end tell
   " >/dev/null
@@ -419,10 +489,15 @@ cmd_get_cell() {
   local sheet_name="$2"
   local table_name="$3"
   local cell_ref="$4"
-  run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        set c to cell \"$cell_ref\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_cell; esc_cell=$(as_escape "$cell_ref")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set c to cell \"$esc_cell\"
         set v to value of c
         set fv to formatted value of c
         set f to formula of c
@@ -442,13 +517,13 @@ cmd_get_cell() {
         else
           set fvStr to fv
         end if
-        return n & \"|||\" & vStr & \"|||\" & fvStr & \"|||\" & fStr
+        return n & \"$DELIM3\" & vStr & \"$DELIM3\" & fvStr & \"$DELIM3\" & fStr
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-parts = line.split('|||')
+parts = line.split('$DELIM3')
 val = parts[1]
 if val == 'null':
     val = None
@@ -462,24 +537,30 @@ cmd_set_cell() {
   local table_name="$3"
   local cell_ref="$4"
   local value="$5"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_cell; esc_cell=$(as_escape "$cell_ref")
+  local esc_value; esc_value=$(as_escape "$value")
   # Check if value starts with = (formula)
   if [[ "$value" == =* ]]; then
     run_applescript "
-      tell application \"$APP\"
-        tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-          set value of cell \"$cell_ref\" to \"$value\"
+      tell application \"$esc_app\"
+        tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+          set value of cell \"$esc_cell\" to \"$esc_value\"
         end tell
       end tell
     " >/dev/null
   else
     # Try number first, fallback to string
     run_applescript "
-      tell application \"$APP\"
-        tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+      tell application \"$esc_app\"
+        tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
           try
-            set value of cell \"$cell_ref\" to ($value as number)
+            set value of cell \"$esc_cell\" to ($esc_value as number)
           on error
-            set value of cell \"$cell_ref\" to \"$value\"
+            set value of cell \"$esc_cell\" to \"$esc_value\"
           end try
         end tell
       end tell
@@ -493,35 +574,41 @@ cmd_get_range() {
   local sheet_name="$2"
   local table_name="$3"
   local range_ref="$4"
-  run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        set r to range \"$range_ref\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_range; esc_range=$(as_escape "$range_ref")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set r to range \"$esc_range\"
         set output to \"\"
         repeat with c in cells of r
           set v to value of c
           set n to name of c
           if v is missing value then
-            set vStr to \"__NULL__\"
+            set vStr to \"$NULL_SENTINEL\"
           else
             set vStr to v as text
           end if
-          set output to output & n & \"|||\" & vStr & linefeed
+          set output to output & n & \"$DELIM3\" & vStr & linefeed
         end repeat
         return output
       end tell
     end tell
-  " | python3 -c "
-import json, sys
+  " | NUMBERS_RANGE="$range_ref" python3 -c "
+import json, sys, os
+range_ref = os.environ['NUMBERS_RANGE']
 cells = []
 for line in sys.stdin:
     line = line.strip()
-    if '|||' in line:
-        name, val = line.split('|||', 1)
-        if val == '__NULL__':
+    if '$DELIM3' in line:
+        name, val = line.split('$DELIM3', 1)
+        if val == '$NULL_SENTINEL':
             val = None
         cells.append({'cell': name, 'value': val})
-print(json.dumps({'range': '$range_ref', 'cells': cells}))
+print(json.dumps({'range': range_ref, 'cells': cells}))
 "
 }
 
@@ -602,10 +689,15 @@ cmd_clear_range() {
   local sheet_name="$2"
   local table_name="$3"
   local range_ref="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_range; esc_range=$(as_escape "$range_ref")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        clear range \"$range_ref\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        clear range \"$esc_range\"
       end tell
     end tell
   " >/dev/null
@@ -617,10 +709,15 @@ cmd_merge_cells() {
   local sheet_name="$2"
   local table_name="$3"
   local range_ref="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_range; esc_range=$(as_escape "$range_ref")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        merge range \"$range_ref\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        merge range \"$esc_range\"
       end tell
     end tell
   " >/dev/null
@@ -632,10 +729,15 @@ cmd_unmerge_cells() {
   local sheet_name="$2"
   local table_name="$3"
   local range_ref="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_range; esc_range=$(as_escape "$range_ref")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        unmerge range \"$range_ref\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        unmerge range \"$esc_range\"
       end tell
     end tell
   " >/dev/null
@@ -650,35 +752,41 @@ cmd_format_range() {
   local table_name="$3"
   local range_ref="$4"
   shift 4
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_range; esc_range=$(as_escape "$range_ref")
   # Remaining args are key=value pairs: font_name=Helvetica font_size=14 bold=true ...
   local commands=""
   while [ $# -gt 0 ]; do
     local kv="$1"
     local key="${kv%%=*}"
     local val="${kv#*=}"
+    local esc_val; esc_val=$(as_escape "$val")
     case "$key" in
       font_name) commands="$commands
-        set font name of range \"$range_ref\" to \"$val\"" ;;
+        set font name of range \"$esc_range\" to \"$esc_val\"" ;;
       font_size) commands="$commands
-        set font size of range \"$range_ref\" to $val" ;;
+        set font size of range \"$esc_range\" to $val" ;;
       text_color) commands="$commands
-        set text color of range \"$range_ref\" to {$val}" ;;
+        set text color of range \"$esc_range\" to {$val}" ;;
       background_color) commands="$commands
-        set background color of range \"$range_ref\" to {$val}" ;;
+        set background color of range \"$esc_range\" to {$val}" ;;
       alignment) commands="$commands
-        set alignment of range \"$range_ref\" to $val" ;;
+        set alignment of range \"$esc_range\" to $val" ;;
       vertical_alignment) commands="$commands
-        set vertical alignment of range \"$range_ref\" to $val" ;;
+        set vertical alignment of range \"$esc_range\" to $val" ;;
       text_wrap) commands="$commands
-        set text wrap of range \"$range_ref\" to $val" ;;
+        set text wrap of range \"$esc_range\" to $val" ;;
       format) commands="$commands
-        set format of range \"$range_ref\" to $val" ;;
+        set format of range \"$esc_range\" to $val" ;;
     esac
     shift
   done
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         $commands
       end tell
     end tell
@@ -694,6 +802,11 @@ cmd_add_row() {
   local table_name="$3"
   local position="${4:-below}"  # above or below
   local ref_cell="${5:-A1}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_ref; esc_ref=$(as_escape "$ref_cell")
   local cmd
   if [ "$position" = "above" ]; then
     cmd="add row above"
@@ -701,9 +814,9 @@ cmd_add_row() {
     cmd="add row below"
   fi
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        $cmd range \"$ref_cell\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        $cmd range \"$esc_ref\"
       end tell
     end tell
   " >/dev/null
@@ -716,6 +829,11 @@ cmd_add_column() {
   local table_name="$3"
   local position="${4:-after}"  # before or after
   local ref_cell="${5:-A1}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_ref; esc_ref=$(as_escape "$ref_cell")
   local cmd
   if [ "$position" = "before" ]; then
     cmd="add column before"
@@ -723,9 +841,9 @@ cmd_add_column() {
     cmd="add column after"
   fi
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        $cmd range \"$ref_cell\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        $cmd range \"$esc_ref\"
       end tell
     end tell
   " >/dev/null
@@ -737,9 +855,13 @@ cmd_remove_row() {
   local sheet_name="$2"
   local table_name="$3"
   local row_num="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         remove row $row_num
       end tell
     end tell
@@ -752,10 +874,15 @@ cmd_remove_column() {
   local sheet_name="$2"
   local table_name="$3"
   local col_name="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_col; esc_col=$(as_escape "$col_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        remove column \"$col_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        remove column \"$esc_col\"
       end tell
     end tell
   " >/dev/null
@@ -768,9 +895,13 @@ cmd_set_row_height() {
   local table_name="$3"
   local row_num="$4"
   local height="$5"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set height of row $row_num to $height
       end tell
     end tell
@@ -784,10 +915,15 @@ cmd_set_column_width() {
   local table_name="$3"
   local col_name="$4"
   local width="$5"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_col; esc_col=$(as_escape "$col_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        set width of column \"$col_name\" to $width
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set width of column \"$esc_col\" to $width
       end tell
     end tell
   " >/dev/null
@@ -801,9 +937,13 @@ cmd_set_header_rows() {
   local sheet_name="$2"
   local table_name="$3"
   local count="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set header row count to $count
       end tell
     end tell
@@ -816,9 +956,13 @@ cmd_set_header_columns() {
   local sheet_name="$2"
   local table_name="$3"
   local count="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set header column count to $count
       end tell
     end tell
@@ -831,9 +975,13 @@ cmd_set_footer_rows() {
   local sheet_name="$2"
   local table_name="$3"
   local count="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set footer row count to $count
       end tell
     end tell
@@ -847,16 +995,20 @@ cmd_set_password() {
   local doc_name="$1"
   local password="$2"
   local hint="${3:-}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_password; esc_password=$(as_escape "$password")
   if [ -n "$hint" ]; then
+    local esc_hint; esc_hint=$(as_escape "$hint")
     run_applescript "
-      tell application \"$APP\"
-        set password \"$password\" to document \"$doc_name\" hint \"$hint\"
+      tell application \"$esc_app\"
+        set password \"$esc_password\" to document \"$esc_doc\" hint \"$esc_hint\"
       end tell
     " >/dev/null
   else
     run_applescript "
-      tell application \"$APP\"
-        set password \"$password\" to document \"$doc_name\"
+      tell application \"$esc_app\"
+        set password \"$esc_password\" to document \"$esc_doc\"
       end tell
     " >/dev/null
   fi
@@ -866,9 +1018,12 @@ cmd_set_password() {
 cmd_remove_password() {
   local doc_name="$1"
   local password="$2"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_password; esc_password=$(as_escape "$password")
   run_applescript "
-    tell application \"$APP\"
-      tell document \"$doc_name\" to remove password \"$password\"
+    tell application \"$esc_app\"
+      tell document \"$esc_doc\" to remove password \"$esc_password\"
     end tell
   " >/dev/null
   echo "{\"status\": \"password_removed\"}"
@@ -880,10 +1035,14 @@ cmd_rename_sheet() {
   local doc_name="$1"
   local old_name="$2"
   local new_name="$3"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_old; esc_old=$(as_escape "$old_name")
+  local esc_new; esc_new=$(as_escape "$new_name")
   run_applescript "
-    tell application \"$APP\"
-      tell document \"$doc_name\"
-        set name of sheet \"$old_name\" to \"$new_name\"
+    tell application \"$esc_app\"
+      tell document \"$esc_doc\"
+        set name of sheet \"$esc_old\" to \"$esc_new\"
       end tell
     end tell
   " >/dev/null
@@ -897,6 +1056,9 @@ cmd_export_with_options() {
   local format="$2"
   local dest_path="$3"
   shift 3
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_dest; esc_dest=$(as_escape "$dest_path")
   local as_format
   case "$format" in
     pdf|PDF) as_format="PDF" ;;
@@ -910,6 +1072,7 @@ cmd_export_with_options() {
     local kv="$1"
     local key="${kv%%=*}"
     local val="${kv#*=}"
+    local esc_val; esc_val=$(as_escape "$val")
     case "$key" in
       image_quality)
         case "$val" in
@@ -917,8 +1080,8 @@ cmd_export_with_options() {
           better|Better) props="$props, image quality:Better" ;;
           best|Best) props="$props, image quality:Best" ;;
         esac ;;
-      password) props="$props, password:\"$val\"" ;;
-      password_hint) props="$props, password hint:\"$val\"" ;;
+      password) props="$props, password:\"$esc_val\"" ;;
+      password_hint) props="$props, password hint:\"$esc_val\"" ;;
       exclude_summary) props="$props, exclude summary worksheet:$val" ;;
       include_comments) props="$props, include comments:$val" ;;
     esac
@@ -927,14 +1090,14 @@ cmd_export_with_options() {
   if [ -n "$props" ]; then
     props="${props#, }"  # remove leading comma+space
     run_applescript "
-      tell application \"$APP\"
-        export document \"$doc_name\" to POSIX file \"$dest_path\" as $as_format with properties {$props}
+      tell application \"$esc_app\"
+        export document \"$esc_doc\" to POSIX file \"$esc_dest\" as $as_format with properties {$props}
       end tell
     " >/dev/null
   else
     run_applescript "
-      tell application \"$APP\"
-        export document \"$doc_name\" to POSIX file \"$dest_path\" as $as_format
+      tell application \"$esc_app\"
+        export document \"$esc_doc\" to POSIX file \"$esc_dest\" as $as_format
       end tell
     " >/dev/null
   fi
@@ -945,13 +1108,15 @@ cmd_export_with_options() {
 
 cmd_get_selection() {
   local doc_name="$1"
-  run_applescript "
-    tell application \"$APP\"
-      tell document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell document \"$esc_doc\"
         set sel to selection
         set output to \"\"
         repeat with s in sel
-          set output to output & class of s & \"|\" & name of s & linefeed
+          set output to output & class of s & \"$DELIM\" & name of s & linefeed
         end repeat
         return output
       end tell
@@ -961,8 +1126,8 @@ import json, sys
 items = []
 for line in sys.stdin:
     line = line.strip()
-    if '|' in line:
-        cls, name = line.split('|', 1)
+    if '$DELIM' in line:
+        cls, name = line.split('$DELIM', 1)
         items.append({'class': cls, 'name': name})
 print(json.dumps({'selection': items}))
 "
@@ -972,9 +1137,13 @@ cmd_get_table_selection() {
   local doc_name="$1"
   local sheet_name="$2"
   local table_name="$3"
-  run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set sr to selection range
         return name of sr
       end tell
@@ -990,10 +1159,15 @@ cmd_set_table_selection() {
   local sheet_name="$2"
   local table_name="$3"
   local range_ref="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_range; esc_range=$(as_escape "$range_ref")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        set selection range to range \"$range_ref\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set selection range to range \"$esc_range\"
       end tell
     end tell
   " >/dev/null
@@ -1007,10 +1181,15 @@ cmd_cell_info() {
   local sheet_name="$2"
   local table_name="$3"
   local cell_ref="$4"
-  run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
-        set c to cell \"$cell_ref\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  local esc_cell; esc_cell=$(as_escape "$cell_ref")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set c to cell \"$esc_cell\"
         set v to value of c
         set fv to formatted value of c
         set f to formula of c
@@ -1032,13 +1211,13 @@ cmd_cell_info() {
         else
           set fvStr to fv
         end if
-        return n & \"|||\" & vStr & \"|||\" & fvStr & \"|||\" & fStr & \"|||\" & r & \"|||\" & co
+        return n & \"$DELIM3\" & vStr & \"$DELIM3\" & fvStr & \"$DELIM3\" & fStr & \"$DELIM3\" & r & \"$DELIM3\" & co
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-parts = line.split('|||')
+parts = line.split('$DELIM3')
 val = parts[1]
 if val == 'null':
     val = None
@@ -1056,9 +1235,13 @@ cmd_list_items() {
   local doc_name="$1"
   local sheet_name="$2"
   local item_type="${3:-iWork item}"  # shape, image, text item, line, chart, group
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  # item_type is used as an AppleScript keyword, not a quoted string — escape not needed
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
         set output to \"\"
         repeat with i in every $item_type
           try
@@ -1071,18 +1254,19 @@ cmd_list_items() {
           set p to position of i
           set px to item 1 of p
           set py to item 2 of p
-          set output to output & n & \"|\" & w & \"|\" & h & \"|\" & px & \"|\" & py & linefeed
+          set output to output & n & \"$DELIM\" & w & \"$DELIM\" & h & \"$DELIM\" & px & \"$DELIM\" & py & linefeed
         end repeat
         return output
       end tell
     end tell
-  " | python3 -c "
-import json, sys
+  " | NUMBERS_ITEM_TYPE="$item_type" python3 -c "
+import json, sys, os
+item_type = os.environ['NUMBERS_ITEM_TYPE']
 items = []
 for line in sys.stdin:
     line = line.strip()
-    if '|' in line:
-        parts = line.split('|')
+    if '$DELIM' in line:
+        parts = line.split('$DELIM')
         items.append({
             'name': parts[0],
             'width': int(float(parts[1])),
@@ -1090,7 +1274,7 @@ for line in sys.stdin:
             'x': int(float(parts[3])),
             'y': int(float(parts[4]))
         })
-print(json.dumps({'items': items, 'type': '$item_type'}))
+print(json.dumps({'items': items, 'type': item_type}))
 "
 }
 
@@ -1100,36 +1284,42 @@ cmd_set_item_property() {
   local item_type="$3"  # shape, image, text item, line
   local item_name="$4"
   shift 4
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_item_name; esc_item_name=$(as_escape "$item_name")
+  # item_type is an AppleScript keyword
   local commands=""
   while [ $# -gt 0 ]; do
     local kv="$1"
     local key="${kv%%=*}"
     local val="${kv#*=}"
+    local esc_val; esc_val=$(as_escape "$val")
     case "$key" in
       width) commands="$commands
-        set width of $item_type \"$item_name\" to $val" ;;
+        set width of $item_type \"$esc_item_name\" to $val" ;;
       height) commands="$commands
-        set height of $item_type \"$item_name\" to $val" ;;
+        set height of $item_type \"$esc_item_name\" to $val" ;;
       position) commands="$commands
-        set position of $item_type \"$item_name\" to {$val}" ;;
+        set position of $item_type \"$esc_item_name\" to {$val}" ;;
       rotation) commands="$commands
-        set rotation of $item_type \"$item_name\" to $val" ;;
+        set rotation of $item_type \"$esc_item_name\" to $val" ;;
       opacity) commands="$commands
-        set opacity of $item_type \"$item_name\" to $val" ;;
+        set opacity of $item_type \"$esc_item_name\" to $val" ;;
       locked) commands="$commands
-        set locked of $item_type \"$item_name\" to $val" ;;
+        set locked of $item_type \"$esc_item_name\" to $val" ;;
       reflection_showing) commands="$commands
-        set reflection showing of $item_type \"$item_name\" to $val" ;;
+        set reflection showing of $item_type \"$esc_item_name\" to $val" ;;
       reflection_value) commands="$commands
-        set reflection value of $item_type \"$item_name\" to $val" ;;
+        set reflection value of $item_type \"$esc_item_name\" to $val" ;;
       object_text) commands="$commands
-        set object text of $item_type \"$item_name\" to \"$val\"" ;;
+        set object text of $item_type \"$esc_item_name\" to \"$esc_val\"" ;;
     esac
     shift
   done
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
         $commands
       end tell
     end tell
@@ -1142,10 +1332,14 @@ cmd_get_item_property() {
   local sheet_name="$2"
   local item_type="$3"
   local item_name="$4"
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        set i to $item_type \"$item_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_item_name; esc_item_name=$(as_escape "$item_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set i to $item_type \"$esc_item_name\"
         set w to width of i
         set h to height of i
         set p to position of i
@@ -1169,13 +1363,13 @@ cmd_get_item_property() {
           set rs to false
           set rv to 0
         end try
-        return w & \"|\" & h & \"|\" & px & \"|\" & py & \"|\" & l & \"|\" & r & \"|\" & o & \"|\" & rs & \"|\" & rv
+        return w & \"$DELIM\" & h & \"$DELIM\" & px & \"$DELIM\" & py & \"$DELIM\" & l & \"$DELIM\" & r & \"$DELIM\" & o & \"$DELIM\" & rs & \"$DELIM\" & rv
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-p = line.split('|')
+p = line.split('$DELIM')
 print(json.dumps({
     'width': int(float(p[0])), 'height': int(float(p[1])),
     'x': int(float(p[2])), 'y': int(float(p[3])),
@@ -1193,21 +1387,25 @@ cmd_get_image_info() {
   local doc_name="$1"
   local sheet_name="$2"
   local image_name="$3"
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        set i to image \"$image_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_image; esc_image=$(as_escape "$image_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set i to image \"$esc_image\"
         set fn to file name of i
         set d to description of i
         set w to width of i
         set h to height of i
-        return fn & \"|||\" & d & \"|||\" & w & \"|||\" & h
+        return fn & \"$DELIM3\" & d & \"$DELIM3\" & w & \"$DELIM3\" & h
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-p = line.split('|||')
+p = line.split('$DELIM3')
 print(json.dumps({'file_name': p[0], 'description': p[1], 'width': int(float(p[2])), 'height': int(float(p[3]))}))
 "
 }
@@ -1217,10 +1415,15 @@ cmd_set_image_description() {
   local sheet_name="$2"
   local image_name="$3"
   local desc="$4"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_image; esc_image=$(as_escape "$image_name")
+  local esc_desc; esc_desc=$(as_escape "$desc")
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        set description of image \"$image_name\" to \"$desc\"
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set description of image \"$esc_image\" to \"$esc_desc\"
       end tell
     end tell
   " >/dev/null
@@ -1233,19 +1436,23 @@ cmd_get_line_points() {
   local doc_name="$1"
   local sheet_name="$2"
   local line_name="$3"
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        set l to line \"$line_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_line; esc_line=$(as_escape "$line_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set l to line \"$esc_line\"
         set sp to start point of l
         set ep to end point of l
-        return (item 1 of sp) & \"|\" & (item 2 of sp) & \"|\" & (item 1 of ep) & \"|\" & (item 2 of ep)
+        return (item 1 of sp) & \"$DELIM\" & (item 2 of sp) & \"$DELIM\" & (item 1 of ep) & \"$DELIM\" & (item 2 of ep)
       end tell
     end tell
   " | python3 -c "
 import json, sys
 line = sys.stdin.read().strip()
-p = line.split('|')
+p = line.split('$DELIM')
 print(json.dumps({
     'start_point': {'x': int(float(p[0])), 'y': int(float(p[1]))},
     'end_point': {'x': int(float(p[2])), 'y': int(float(p[3]))}
@@ -1261,11 +1468,15 @@ cmd_set_line_points() {
   local start_y="$5"
   local end_x="$6"
   local end_y="$7"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_line; esc_line=$(as_escape "$line_name")
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        set start point of line \"$line_name\" to {$start_x, $start_y}
-        set end point of line \"$line_name\" to {$end_x, $end_y}
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set start point of line \"$esc_line\" to {$start_x, $start_y}
+        set end point of line \"$esc_line\" to {$end_x, $end_y}
       end tell
     end tell
   " >/dev/null
@@ -1279,10 +1490,14 @@ cmd_get_object_text() {
   local sheet_name="$2"
   local item_type="$3"  # shape or text item
   local item_name="$4"
-  run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        return object text of $item_type \"$item_name\" as text
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_item_name; esc_item_name=$(as_escape "$item_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        return object text of $item_type \"$esc_item_name\" as text
       end tell
     end tell
   " | python3 -c "
@@ -1297,10 +1512,15 @@ cmd_set_object_text() {
   local item_type="$3"  # shape or text item
   local item_name="$4"
   local text="$5"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_item_name; esc_item_name=$(as_escape "$item_name")
+  local esc_text; esc_text=$(as_escape "$text")
   run_applescript "
-    tell application \"$APP\"
-      tell sheet \"$sheet_name\" of document \"$doc_name\"
-        set object text of $item_type \"$item_name\" to \"$text\"
+    tell application \"$esc_app\"
+      tell sheet \"$esc_sheet\" of document \"$esc_doc\"
+        set object text of $item_type \"$esc_item_name\" to \"$esc_text\"
       end tell
     end tell
   " >/dev/null
@@ -1311,9 +1531,11 @@ cmd_set_object_text() {
 
 cmd_is_password_protected() {
   local doc_name="$1"
-  run_applescript "
-    tell application \"$APP\"
-      return password protected of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      return password protected of document \"$esc_doc\"
     end tell
   " | python3 -c "
 import json, sys
@@ -1328,9 +1550,13 @@ cmd_read_table() {
   local doc_name="$1"
   local sheet_name="$2"
   local table_name="$3"
-  run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
+  run_applescript_safe "
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set rc to row count
         set cc to column count
         set output to \"\"
@@ -1338,12 +1564,12 @@ cmd_read_table() {
           repeat with c from 1 to cc
             set v to value of cell r of column c
             if v is missing value then
-              set vStr to \"__NULL__\"
+              set vStr to \"$NULL_SENTINEL\"
             else
               set vStr to v as text
             end if
             if c < cc then
-              set output to output & vStr & \"|||\"
+              set output to output & vStr & \"$DELIM3\"
             else
               set output to output & vStr
             end if
@@ -1360,10 +1586,10 @@ for line in sys.stdin:
     line = line.rstrip('\n')
     if not line:
         continue
-    cells = line.split('|||')
+    cells = line.split('$DELIM3')
     row = []
     for c in cells:
-        if c == '__NULL__':
+        if c == '$NULL_SENTINEL':
             row.append(None)
         else:
             row.append(c)
@@ -1391,6 +1617,9 @@ sheet = os.environ["NUMBERS_SHEET"]
 table = os.environ["NUMBERS_TABLE"]
 data = json.load(sys.stdin)
 
+num_rows = len(data)
+num_cols = max((len(row) for row in data), default=0)
+
 def num_to_col(n):
     s = ""
     while n > 0:
@@ -1400,6 +1629,25 @@ def num_to_col(n):
 
 def as_escape(s):
     return s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+esc_doc = as_escape(doc)
+esc_sheet = as_escape(sheet)
+esc_table = as_escape(table)
+
+# Resize table to match data dimensions and clear existing cells
+end_col = num_to_col(num_cols)
+clear_range = f"A1:{end_col}{num_rows}"
+resize_script = f"""tell application "Numbers"
+  tell table "{esc_table}" of sheet "{esc_sheet}" of document "{esc_doc}"
+    set row count to {num_rows}
+    set column count to {num_cols}
+    clear range "{clear_range}"
+  end tell
+end tell"""
+result = subprocess.run(["osascript", "-e", resize_script], capture_output=True, text=True)
+if result.returncode != 0:
+    print(json.dumps({"error": "Failed to resize/clear table: " + result.stderr.strip()}))
+    sys.exit(1)
 
 commands = []
 for ri, row in enumerate(data):
@@ -1418,9 +1666,6 @@ for ri, row in enumerate(data):
 
 batch_size = 50
 total = 0
-esc_doc = as_escape(doc)
-esc_sheet = as_escape(sheet)
-esc_table = as_escape(table)
 for i in range(0, len(commands), batch_size):
     batch = commands[i:i+batch_size]
     script = f"""tell application "Numbers"
@@ -1445,9 +1690,13 @@ cmd_freeze_header_rows() {
   local sheet_name="$2"
   local table_name="$3"
   local frozen="${4:-true}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set header rows frozen to $frozen
       end tell
     end tell
@@ -1460,9 +1709,13 @@ cmd_freeze_header_columns() {
   local sheet_name="$2"
   local table_name="$3"
   local frozen="${4:-true}"
+  local esc_app; esc_app=$(as_escape "$APP")
+  local esc_doc; esc_doc=$(as_escape "$doc_name")
+  local esc_sheet; esc_sheet=$(as_escape "$sheet_name")
+  local esc_table; esc_table=$(as_escape "$table_name")
   run_applescript "
-    tell application \"$APP\"
-      tell table \"$table_name\" of sheet \"$sheet_name\" of document \"$doc_name\"
+    tell application \"$esc_app\"
+      tell table \"$esc_table\" of sheet \"$esc_sheet\" of document \"$esc_doc\"
         set header columns frozen to $frozen
       end tell
     end tell
@@ -1597,7 +1850,7 @@ TABLE COMMANDS:
   new-table <doc> <sheet> [name] [rows] [cols]  Create new table
   delete-table <doc> <sheet> <table>        Delete table
   table-info <doc> <sheet> <table>          Get table info
-  sort-table <doc> <sheet> <table> <col> [asc|desc]  Sort table
+  sort-table <doc> <sheet> <table> <col> [ascending|descending]  Sort table
   transpose-table <doc> <sheet> <table>     Transpose table
   read-table <doc> <sheet> <table>          Read entire table as JSON
   write-table <doc> <sheet> <table> <json>  Write JSON data to table

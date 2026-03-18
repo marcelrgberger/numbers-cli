@@ -2,7 +2,7 @@
 
 A [Claude Code](https://claude.com/claude-code) plugin that gives Claude full programmatic control over **Apple Numbers** via AppleScript. Create spreadsheets, manage data, format cells, set formulas, export to PDF/Excel/CSV, manipulate shapes and images — all through natural language or direct CLI commands.
 
-> **60+ commands** covering the entire Numbers AppleScript API. All output is JSON.
+> **60+ commands** covering the most-used Numbers AppleScript API surface. All output is JSON.
 
 ## Installation
 
@@ -178,7 +178,7 @@ bash "$SCRIPT" quit
 | `new-table <doc> <sheet> [name] [rows] [cols]` | Create a new table |
 | `delete-table <doc> <sheet> <table>` | Delete a table |
 | `table-info <doc> <sheet> <table>` | Row/column counts, headers, footers, filter status |
-| `sort-table <doc> <sheet> <table> <col> [asc\|desc]` | Sort by column |
+| `sort-table <doc> <sheet> <table> <col> [ascending\|descending]` | Sort by column |
 | `transpose-table <doc> <sheet> <table>` | Transpose rows and columns |
 | `read-table <doc> <sheet> <table>` | Read entire table as JSON array |
 | `write-table <doc> <sheet> <table> <json>` | Write JSON data to table |
@@ -191,7 +191,7 @@ bash "$SCRIPT" quit
 | `set-cell <doc> <sheet> <table> <cell> <value>` | Set value (text, number, or `=formula`) |
 | `cell-info <doc> <sheet> <table> <cell>` | Extended info including row/column address |
 | `get-range <doc> <sheet> <table> <range>` | Get all values in a range |
-| `set-range <doc> <sheet> <table> <start> <csv>` | Set range (`;` = row sep, `,` = col sep) |
+| `set-range <doc> <sheet> <table> <start> <csv>` | Set range (`;` = row sep, `,` = col sep). **Note:** values containing commas or semicolons cannot be represented in CSV format — use `write-table` with JSON for complex data. |
 | `clear-range <doc> <sheet> <table> <range>` | Clear content and formatting |
 | `merge <doc> <sheet> <table> <range>` | Merge cells |
 | `unmerge <doc> <sheet> <table> <range>` | Unmerge cells |

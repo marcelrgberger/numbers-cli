@@ -1,7 +1,7 @@
 {
   "name": "numbers-cli",
   "version": "1.0.0",
-  "description": "Complete Apple Numbers control via AppleScript — create spreadsheets, manage sheets/tables/cells, format, export, and more.",
+  "description": "Apple Numbers control via AppleScript — manage spreadsheets, sheets, tables, cells, formatting, formulas, and export.",
   "skills": [
     "skills/numbers.md"
   ],

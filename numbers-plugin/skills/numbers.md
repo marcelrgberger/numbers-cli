@@ -48,6 +48,9 @@ bash "$SCRIPT" export "MyDoc" pdf "/path/to/output.pdf"
 bash "$SCRIPT" export "MyDoc" excel "/path/to/output.xlsx"
 bash "$SCRIPT" export "MyDoc" csv "/path/to/output.csv"
 
+# Export with options (image_quality, password, password_hint, exclude_summary, include_comments)
+bash "$SCRIPT" export-with-options "MyDoc" pdf "/path/to/output.pdf" image_quality=high password=secret password_hint="hint" exclude_summary=false include_comments=true
+
 # Close document
 bash "$SCRIPT" close "MyDoc" yes
 
@@ -65,6 +68,9 @@ bash "$SCRIPT" new-sheet "MyDoc" "Sales Data"
 
 # Delete sheet
 bash "$SCRIPT" delete-sheet "MyDoc" "Sheet 2"
+
+# Rename sheet
+bash "$SCRIPT" rename-sheet "MyDoc" "Sheet 1" "Sales Data"
 
 # Set active sheet
 bash "$SCRIPT" set-active-sheet "MyDoc" "Sales Data"
@@ -178,6 +184,57 @@ bash "$SCRIPT" set-password "MyDoc" "s3cret" "See sticky note"
 
 # Remove password
 bash "$SCRIPT" remove-password "MyDoc" "s3cret"
+
+# Check if document is password-protected
+bash "$SCRIPT" is-password-protected "MyDoc"
+```
+
+### Selection
+```bash
+# Get currently selected items
+bash "$SCRIPT" get-selection "MyDoc"
+
+# Get selected cell range in a table
+bash "$SCRIPT" get-table-selection "MyDoc" "Sheet 1" "Table 1"
+
+# Select a cell range in a table
+bash "$SCRIPT" set-table-selection "MyDoc" "Sheet 1" "Table 1" "A1:C3"
+```
+
+### Extended Cell Info
+```bash
+# Get extended cell info including row/column address
+bash "$SCRIPT" cell-info "MyDoc" "Sheet 1" "Table 1" "B2"
+```
+
+### iWork Items (Shapes, Images, Lines, Text Items)
+```bash
+# List items on a sheet (type: shape, image, text item, line, chart, group)
+bash "$SCRIPT" list-items "MyDoc" "Sheet 1" image
+
+# Get item properties (size, position, rotation, opacity, locked, reflection)
+bash "$SCRIPT" get-item-property "MyDoc" "Sheet 1" image "My Image"
+
+# Set item properties
+bash "$SCRIPT" set-item-property "MyDoc" "Sheet 1" shape "My Shape" width=200 height=100 position=50,50 rotation=45 opacity=80 locked=false
+
+# Get image info (file name, accessibility description, size)
+bash "$SCRIPT" get-image-info "MyDoc" "Sheet 1" "My Image"
+
+# Set image accessibility description
+bash "$SCRIPT" set-image-description "MyDoc" "Sheet 1" "My Image" "A chart showing Q1 revenue"
+
+# Get line start/end point coordinates
+bash "$SCRIPT" get-line-points "MyDoc" "Sheet 1" "My Line"
+
+# Set line start/end point coordinates
+bash "$SCRIPT" set-line-points "MyDoc" "Sheet 1" "My Line" 0 0 200 300
+
+# Get text inside a shape or text item
+bash "$SCRIPT" get-object-text "MyDoc" "Sheet 1" shape "My Shape"
+
+# Set text inside a shape or text item
+bash "$SCRIPT" set-object-text "MyDoc" "Sheet 1" shape "My Shape" "Hello World"
 ```
 
 ## Workflow Patterns
@@ -196,13 +253,14 @@ bash "$SCRIPT" export "Sales" pdf "$HOME/Desktop/Sales.pdf"
 
 ### Import CSV data
 ```bash
-# Read CSV with python, convert to JSON, write to Numbers
-python3 -c "
+# Read CSV with python, convert to JSON, then write to Numbers
+JSON=$(python3 -c "
 import csv, json
 with open('data.csv') as f:
     data = list(csv.reader(f))
 print(json.dumps(data))
-" | xargs -0 bash "$SCRIPT" write-table "MyDoc" "Sheet 1" "Table 1"
+")
+bash "$SCRIPT" write-table "MyDoc" "Sheet 1" "Table 1" "$JSON"
 ```
 
 ## Notes
