@@ -1,0 +1,12 @@
+{
+  "name": "numbers-control",
+  "version": "1.0.0",
+  "description": "Complete Apple Numbers control via AppleScript — create spreadsheets, manage sheets/tables/cells, format, export, and more.",
+  "skills": [
+    "skills/numbers.md"
+  ],
+  "hooks": [],
+  "agents": [
+    "agents/numbers-executor.md"
+  ]
+}
